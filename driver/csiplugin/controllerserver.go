@@ -32,6 +32,12 @@ import (
 	"golang.org/x/net/context"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime/schema"
+	"k8s.io/apimachinery/pkg/types"
+	"k8s.io/client-go/rest"
+	"sigs.k8s.io/controller-runtime/pkg/client"
 )
 
 const (
@@ -432,6 +438,48 @@ func (cs *ScaleControllerServer) createFilesetVol(scVol *scaleVolume, volName st
 
 	// fileset is present/created. Confirm if fileset is linked
 	if (filesetInfo.Config.Path == "") || (filesetInfo.Config.Path == filesetUnlinkedPath) {
+
+		if opt[connectors.UserSpecifiedFilesetType] == dependentFileset {
+			config, err := rest.InClusterConfig()
+			if err != nil {
+				return "", status.Error(codes.Internal, fmt.Sprintf("failed to get kube config: %v", err))
+			}
+			kubeClient, err := client.New(config, client.Options{})
+			if err != nil {
+				return "", status.Error(codes.Internal, fmt.Sprintf("failed to create client: %v", err))
+			}
+			afmdr := unstructured.Unstructured{}
+			afmdr.SetGroupVersionKind(schema.GroupVersionKind{
+				Kind:    "AFMDr",
+				Group:   "scale.spectrum.ibm.com",
+				Version: "v1alpha1",
+			})
+
+			ctx := context.Background()
+			if err = kubeClient.Get(ctx, types.NamespacedName{Name: scVol.Namespace, Namespace: scVol.Namespace}, &afmdr); err != nil && !apierrors.IsNotFound(err) {
+				return "", status.Error(codes.Internal, fmt.Sprintf("failed to create client: %v", err))
+			}
+			// found
+			if err == nil {
+				unstructured.SetNestedField(afmdr.Object, "unsynchronized", "status", "syncState")
+				if err = kubeClient.Status().Update(ctx, &afmdr); err != nil {
+					return "", status.Error(codes.Internal, fmt.Sprintf("failed to update AFMDR status: %v", err))
+				}
+
+				for i := 1; i < 10; i++ {
+					time.Sleep(2 * time.Second)
+					if err = kubeClient.Get(ctx, types.NamespacedName{Name: scVol.Namespace, Namespace: scVol.Namespace}, &afmdr); err != nil {
+						return "", status.Error(codes.Internal, fmt.Sprintf("failed to create client: %v", err))
+					}
+
+					status, _, _ := unstructured.NestedString(afmdr.Object, "status", "syncState")
+					if status != "unsynchronized" {
+						break
+					}
+				}
+			}
+		}
+
 		// this means not linked, link it
 		var junctionPath string
 		junctionPath = fmt.Sprintf("%s/%s", fsDetails.Mount.MountPoint, volName)

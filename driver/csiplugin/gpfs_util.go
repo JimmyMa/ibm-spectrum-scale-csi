@@ -67,6 +67,7 @@ type scaleVolume struct {
 	Compression        string                            `json:"compression"`
 	Tier               string                            `json:"tier"`
 	Shared             bool                              `json:"shared"`
+	Namespace          string                            `json:"namespace"`
 }
 
 type scaleVolId struct {
@@ -384,6 +385,8 @@ func getScaleVolumeOptions(volOptions map[string]string) (*scaleVolume, error) {
 		}
 		scaleVol.ConsistencyGroup = fmt.Sprintf("%s-%s", cgPrefix, volOptions["csi.storage.k8s.io/pvc/namespace"])
 	}
+
+	scaleVol.Namespace = volOptions["csi.storage.k8s.io/pvc/namespace"]
 
 	if isCompressionSpecified {
 		// Default compression will be Z if set but not specified
